@@ -21,3 +21,11 @@ output "ec2_public_dns" {
 output "website_url" {
   value = module.ec2_web.website_url
 }
+
+output "cloudwatch_log_group_name" {
+  value = module.ec2_web.cloudwatch_log_group_name
+}
+
+output "high_cpu_alarm_name" {
+  value = module.ec2_web.high_cpu_alarm_name
+}

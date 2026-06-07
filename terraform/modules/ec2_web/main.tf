@@ -2,23 +2,68 @@ data "aws_ssm_parameter" "amazon_linux_2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
+resource "aws_cloudwatch_log_group" "web" {
+  name = "/aws/sre-lab/${var.name_prefix}/ec2-web"
+  retention_in_days = var.log_retention_days
+  
+  tags = {
+    Name = "${var.name_prefix}-ec2-web-logs"
+  }
+}
+
+resource "aws_iam_role" "web" {
+  name = "${var.name_prefix}-ec2-web-role"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+	Statement = [
+	  {
+	    Effect = "Allow"
+		Principal = {
+		  Service = "ec2.amazonaws.com"
+		}
+		Action = "sts:AssumeRole"
+	  }
+	]
+  })
+  
+  tags = {
+    Name = "${var.name_prefix}-ec2-web-role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
+  role 		 = aws_iam_role.web.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role = aws_iam_role.web.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "web" {
+  name = "${var.name_prefix}-ec2-web-profile"
+  role = aws_iam_role.web.name
+}
+
 resource "aws_security_group" "web" {
-  name = "${var.name_prefix}-web-sg"
+  name 		  = "${var.name_prefix}-web-sg"
   description = "Allow HTTP inbound traffic for EC2 web test"
   
   ingress {
     description = "HTTP from internet to test web server"
-	from_port = 80
-	to_port = 80
-	protocol = "tcp"
+	from_port   = 80
+	to_port 	= 80
+	protocol 	= "tcp"
 	cidr_blocks = [var.allowed_http_cidr]
   }
   
   egress {
     description = "Allow outbout internet access"
-	from_port = 0
-	to_port = 0
-	protocol = "-1"
+	from_port 	= 0
+	to_port 	= 0
+	protocol 	= "-1"
 	cidr_blocks = ["0.0.0.0/0"]
   }
   
@@ -28,33 +73,97 @@ resource "aws_security_group" "web" {
  }
  
  resource "aws_instance" "web" {
-   ami = data.aws_ssm_parameter.amazon_linux_2023.value
-   instance_type = var.instance_type
+   ami 						   = data.aws_ssm_parameter.amazon_linux_2023.value
+   instance_type 			   = var.instance_type
    associate_public_ip_address = true
-   vpc_security_group_ids = [aws_security_group.web.id]
+   vpc_security_group_ids 	   = [aws_security_group.web.id]
+   iam_instance_profile 	   = aws_iam_instance_profile.web.name
+   user_data_replace_on_change = true
    
    
-   user_data = <<-EOF
-				#!/bin/bash
-				dnf update -y
-				dnf install -y nginx
-				systemctl enable nginx
-				systemctl start nginx
+   user_data = <<EOF
+#!/bin/bash
+
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+set -x
+
+echo "Starting Phase 1B user_data script"
+
+dnf update -y
+dnf install -y nginx
+
+systemctl enable nginx
+systemctl start nginx
+
+TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") || true
+
+if [ -n "$TOKEN" ]; then
+  INSTANCE_ID=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id) || INSTANCE_ID="unknown"
+else
+  INSTANCE_ID="unknown"
+fi
+
+mkdir -p /usr/share/nginx/html
+
+cat > /usr/share/nginx/html/index.html <<HTML
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AWS SRE Reliability Lab</title>
+  </head>
+  <body>
+    <h1>AWS SRE Reliability Lab</h1>
+    <p>Phase 1B EC2 web server with CloudWatch visibility.</p>
+    <p>Instance ID: $INSTANCE_ID</p>
+  </body>
+</html>
+HTML
+
+dnf install -y amazon-cloudwatch-agent || echo "CloudWatch Agent package install failed; continuing with Nginx running."
+
+if [ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+  cat > /opt/aws/amazon-cloudwatch-agent/bin/config.json <<'CWCONFIG'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/nginx/access.log",
+            "log_group_name": "${aws_cloudwatch_log_group.web.name}",
+            "log_stream_name": "{instance_id}/nginx/access.log"
+          },
+          {
+            "file_path": "/var/log/nginx/error.log",
+            "log_group_name": "${aws_cloudwatch_log_group.web.name}",
+            "log_stream_name": "{instance_id}/nginx/error.log"
+          },
+          {
+            "file_path": "/var/log/user-data.log",
+            "log_group_name": "${aws_cloudwatch_log_group.web.name}",
+            "log_stream_name": "{instance_id}/user-data.log"
+          }
+        ]
+      }
+    }
+  }
+}
+CWCONFIG
+
+  /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json \
+    -s || echo "CloudWatch Agent start failed; continuing with Nginx running."
+fi
+
+systemctl status nginx --no-pager || true
+curl -I http://localhost || true
+
+echo "Phase 1B user_data script completed"
+EOF
 				
-				cat > /usr/share/nginx/html/index.html <<HTML
-				<!DOCTYPE html>
-				<html>
-				  <head>
-				    <title>AWS SRE Reliability Lab</title>
-				  </head>
-				  <body>
-				    <h1>AWS SRE Reliability Lab Stuff</h1>
-					<p>Phase 1 EC2 web server deployed with Terraform.</p>
-					<p>Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)</p>
-				  </body>
-				</html>
-				HTML
-				EOF
+				
 
 	metadata_options {
 	  http_tokens = "required"
@@ -65,3 +174,22 @@ resource "aws_security_group" "web" {
 	}
 }
    
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+  alarm_name 		  = "${var.name_prefix}-ec2-high_cpu"
+  alarm_description   = "Alarm when EC2 CPU utilization is high for the SRE lab web instance."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name 		  = "CPUUtilization"
+  namespace 		  = "AWS/EC2"
+  period 			  = 300
+  statistic 		  = "Average"
+  threshold 		  = 70
+  
+  dimensions = {
+    InstanceId = aws_instance.web.id
+  }
+  
+  tags = {
+    Name = "${var.name_prefix}-ec2-high-cpu"
+  }
+}
