@@ -109,22 +109,32 @@ resource "aws_security_group" "web" {
   }
  }
   
-resource "aws_instance" "web" {
-  ami 						   = data.aws_ssm_parameter.amazon_linux_2023.value
-  instance_type 			   = var.instance_type
-  associate_public_ip_address  = true
-  vpc_security_group_ids 	   = [aws_security_group.web.id]
-  iam_instance_profile 	   	   = aws_iam_instance_profile.web.name
-  user_data_replace_on_change  = true
+resource "aws_launch_template" "web" {
+  name_prefix 	= "${var.name_prefix}-web-"
+  image_id 	  	= data.aws_ssm_parameter.amazon_linux_2023.value
+  instance_type = var.instance_type
+  
+  iam_instance_profile {
+    name = aws_iam_instance_profile.web.name
+  }
+  
+  network_interfaces {
+    associate_public_ip_address = true
+	security_groups 			= [aws_security_group.web.id]
+  }
+  
+  metadata_options {
+    http_tokens = "required"
+  }
+ 
    
-   
-   user_data = <<EOF
+   user_data = base64encode(<<EOF
 #!/bin/bash
 
 exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 set -x
 
-echo "Starting Phase 1C user_data script"
+echo "Starting Phase 1D Auto Scaling user_data script"
 
 dnf update -y
 dnf install -y nginx
@@ -150,7 +160,7 @@ cat > /usr/share/nginx/html/index.html <<HTML
   </head>
   <body>
     <h1>AWS SRE Reliability Lab</h1>
-    <p>Phase 1C EC2 web server with CloudWatch visibility.</p>
+    <p>Phase 1D EC2 web server launched by an Auto Scaling Group behind an Applicaton Load Balancer.</p>
     <p>Instance ID: $INSTANCE_ID</p>
   </body>
 </html>
@@ -197,15 +207,10 @@ fi
 systemctl status nginx --no-pager || true
 curl -I http://localhost || true
 
-echo "Phase 1C user_data script completed"
+echo "Phase 1D Auto Scaling user_data script completed"
 EOF
-				
-				
-
-	metadata_options {
-	  http_tokens = "required"
-	}
-	
+  )
+		
 	tags = {
 	  Name = "${var.name_prefix}-web"
 	}
@@ -246,12 +251,6 @@ resource "aws_lb_target_group" "web" {
   }
 }
 
-resource "aws_lb_target_group_attachment" "web" {
-  target_group_arn = aws_lb_target_group.web.arn
-  target_id		   = aws_instance.web.id
-  port 			   = 80
-}
-
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.web.arn
   port 				= 80
@@ -263,9 +262,55 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+resource "aws_autoscaling_group" "web" {
+  name						= "${var.name_prefix}-web-asg"
+  min_size					= var.asg_min_size
+  max_size					= var.asg_max_size
+  desired_capacity			= var.asg_desired_capacity
+  vpc_zone_identifier		= data.aws_subnets.default.ids
+  target_group_arns			= [aws_lb_target_group.web.arn]
+  health_check_type			= "ELB"
+  health_check_grace_period = var.health_check_grace_period
+  
+  launch_template {
+    id		= aws_launch_template.web.id
+	version = "$Latest"
+  }
+  
+  tag {
+    key					= "Name"
+	value				= "${var.name_prefix}-web-asg-instance"
+	propagate_at_launch = true
+  }
+  
+  tag {
+    key					= "Project"
+	value				= "aws-sre-reliability-lab"
+	propagate_at_launch = true
+  }
+
+  tag {
+    key					= "Environment"
+	value				= "dev"
+	propagate_at_launch = true
+  }
+
+  tag {
+    key					= "ManagedBy"
+	value				= "Terraform"
+	propagate_at_launch = true
+  }
+  
+  depends_on = [
+    aws_lb_listener.http,
+	aws_iam_role_policy_attachment.cloudwatch_agent,
+	aws_iam_role_policy_attachment.ssm_core
+  ]
+}
+  
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
-  alarm_name 		  = "${var.name_prefix}-ec2-high_cpu"
-  alarm_description   = "Alarm when EC2 CPU utilization is high for the SRE lab web instance."
+  alarm_name 		  = "${var.name_prefix}-asg-high_cpu"
+  alarm_description   = "Alarm when EC2 CPU utilization is high for the SRE lab Auto Scaling Group."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name 		  = "CPUUtilization"
@@ -275,10 +320,10 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   threshold 		  = 70
   
   dimensions = {
-    InstanceId = aws_instance.web.id
+    AutoScalingGroupName = aws_autoscaling_group.web.name
   }
   
   tags = {
-    Name = "${var.name_prefix}-ec2-high-cpu"
+    Name = "${var.name_prefix}-asg-high-cpu"
   }
 }
