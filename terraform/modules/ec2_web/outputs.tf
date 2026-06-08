@@ -18,6 +18,21 @@ output "website_url" {
   value 	  = "http://${aws_instance.web.public_dns}"
 }
 
+output "load_balancer_dns_name" {
+  description = "DNS name of the Application Load Balancer."
+  value 	  = aws_lb.web.dns_name
+}
+
+output "load_balancer_url" {
+  description = "HTTP URL for the Application Load Balancer."
+  value		  = "http://${aws_lb.web.dns_name}"
+}
+
+output "target_group_arn" {
+  description = "ARN of the ALB target group"
+  value		  = aws_lb_target_group.web.arn
+}
+
 output "cloudwatch_log_group_name" {
   description = "Name of the CloudWatch log group for the EC2 web server."
   value		  = aws_cloudwatch_log_group.web.name

@@ -1,9 +1,21 @@
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name = "vpc-id"
+	values = [data.aws_vpc.default.id]
+  }
+}
+
+
 data "aws_ssm_parameter" "amazon_linux_2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 resource "aws_cloudwatch_log_group" "web" {
-  name = "/aws/sre-lab/${var.name_prefix}/ec2-web"
+  name 				= "/aws/sre-lab/${var.name_prefix}/ec2-web"
   retention_in_days = var.log_retention_days
   
   tags = {
@@ -38,7 +50,7 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role = aws_iam_role.web.name
+  role 		 = aws_iam_role.web.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
@@ -47,20 +59,45 @@ resource "aws_iam_instance_profile" "web" {
   role = aws_iam_role.web.name
 }
 
+resource "aws_security_group" "alb" {
+  name = "${var.name_prefix}-alb-sg"
+  description = "Allow HTTP inbound traffic to the Application Load Balancer."
+  
+  ingress {
+    description = "HTTP from internet to ALB."
+	from_port   = 80
+	to_port     = 80
+	protocol    = "tcp"
+	cidr_blocks  = [var.allowed_http_cidr]
+  }
+  
+  egress {
+    description = "Allow outbound traffic from ALB."
+	from_port   = 0
+	to_port     = 0
+	protocol    = "-1"
+	cidr_blocks  = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name = "${var.name_prefix}-alb-sg"
+  }
+}
+
 resource "aws_security_group" "web" {
   name 		  = "${var.name_prefix}-web-sg"
   description = "Allow HTTP inbound traffic for EC2 web test"
   
   ingress {
-    description = "HTTP from internet to test web server"
-	from_port   = 80
-	to_port 	= 80
-	protocol 	= "tcp"
-	cidr_blocks = [var.allowed_http_cidr]
+    description 	= "HTTP from ALB to EC2"
+	from_port   	= 80
+	to_port 		= 80
+	protocol 		= "tcp"
+	security_groups = [aws_security_group.alb.id]
   }
   
   egress {
-    description = "Allow outbout internet access"
+    description = "Allow outbound internet access"
 	from_port 	= 0
 	to_port 	= 0
 	protocol 	= "-1"
@@ -71,14 +108,14 @@ resource "aws_security_group" "web" {
     Name = "${var.name_prefix}-web-sg"
   }
  }
- 
- resource "aws_instance" "web" {
-   ami 						   = data.aws_ssm_parameter.amazon_linux_2023.value
-   instance_type 			   = var.instance_type
-   associate_public_ip_address = true
-   vpc_security_group_ids 	   = [aws_security_group.web.id]
-   iam_instance_profile 	   = aws_iam_instance_profile.web.name
-   user_data_replace_on_change = true
+  
+resource "aws_instance" "web" {
+  ami 						   = data.aws_ssm_parameter.amazon_linux_2023.value
+  instance_type 			   = var.instance_type
+  associate_public_ip_address  = true
+  vpc_security_group_ids 	   = [aws_security_group.web.id]
+  iam_instance_profile 	   	   = aws_iam_instance_profile.web.name
+  user_data_replace_on_change  = true
    
    
    user_data = <<EOF
@@ -87,7 +124,7 @@ resource "aws_security_group" "web" {
 exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 set -x
 
-echo "Starting Phase 1B user_data script"
+echo "Starting Phase 1C user_data script"
 
 dnf update -y
 dnf install -y nginx
@@ -113,7 +150,7 @@ cat > /usr/share/nginx/html/index.html <<HTML
   </head>
   <body>
     <h1>AWS SRE Reliability Lab</h1>
-    <p>Phase 1B EC2 web server with CloudWatch visibility.</p>
+    <p>Phase 1C EC2 web server with CloudWatch visibility.</p>
     <p>Instance ID: $INSTANCE_ID</p>
   </body>
 </html>
@@ -160,7 +197,7 @@ fi
 systemctl status nginx --no-pager || true
 curl -I http://localhost || true
 
-echo "Phase 1B user_data script completed"
+echo "Phase 1C user_data script completed"
 EOF
 				
 				
@@ -174,6 +211,58 @@ EOF
 	}
 }
    
+resource "aws_lb" "web" {
+  name				 = "${var.name_prefix}-web-alb"
+  internal			 = false
+  load_balancer_type = "application"
+  security_groups	 = [aws_security_group.alb.id]
+  subnets			 = data.aws_subnets.default.ids
+  
+  tags = {
+    Name = "${var.name_prefix}-web-alb"
+  }
+}
+
+resource "aws_lb_target_group" "web" {
+  name		  = "${var.name_prefix}-web-tg"
+  port		  = 80
+  protocol	  = "HTTP"
+  target_type = "instance"
+  vpc_id 	  = data.aws_vpc.default.id
+
+  health_check {
+    enabled				= true
+	path				= "/"
+	protocol			= "HTTP"
+	matcher				= "200-399"
+	interval			= 30
+	timeout				= 5
+	healthy_threshold	= 2
+	unhealthy_threshold = 2
+  }
+  
+  tags = {
+    Name = "${var.name_prefix}-web-tg"
+  }
+}
+
+resource "aws_lb_target_group_attachment" "web" {
+  target_group_arn = aws_lb_target_group.web.arn
+  target_id		   = aws_instance.web.id
+  port 			   = 80
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.web.arn
+  port 				= 80
+  protocol			= "HTTP"
+  
+  default_action {
+    type = "forward"
+	target_group_arn = aws_lb_target_group.web.arn
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   alarm_name 		  = "${var.name_prefix}-ec2-high_cpu"
   alarm_description   = "Alarm when EC2 CPU utilization is high for the SRE lab web instance."
