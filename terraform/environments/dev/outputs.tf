@@ -37,3 +37,11 @@ output "cloudwatch_log_group_name" {
 output "high_cpu_alarm_name" {
   value = module.ec2_web.high_cpu_alarm_name
 }
+
+output "ecr_repository_url" {
+  value = module.ecr.repository_url
+}
+
+output "ecr_repository_name" {
+  value = module.ecr.repository_name
+}
