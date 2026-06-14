@@ -32,3 +32,24 @@ output "cluster_name" {
   description = "Planned EKS cluster name."
   value       = local.cluster_name
 }
+
+output "eks_cluster_name" {
+  description = "Name of the EKS cluster."
+  value       = aws_eks_cluster.main.name
+}
+
+output "eks_cluster_endpoint" {
+  description = "Endpoint for the EKS Kubernetes API server."
+  value       = aws_eks_cluster.main.endpoint
+}
+
+output "eks_cluster_arn" {
+  description = "ARN of the EKS cluster."
+  value       = aws_eks_cluster.main.arn
+}
+
+output "eks_cluster_certificate_authority_data" {
+  description = "Base64 encoded certificate data required for Kubernetes clients."
+  value       = aws_eks_cluster.main.certificate_authority[0].data
+  sensitive   = true
+}
