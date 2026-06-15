@@ -53,3 +53,18 @@ output "eks_cluster_certificate_authority_data" {
   value       = aws_eks_cluster.main.certificate_authority[0].data
   sensitive   = true
 }
+
+output "packer_eks_node_ami_id" {
+  description = "Latest Packer-built EKS node AMI ID."
+  value       = data.aws_ami.packer_eks_node.id
+}
+
+output "eks_node_group_name" {
+  description = "Name of the EKS managed node group."
+  value       = aws_eks_node_group.main.node_group_name
+}
+
+output "eks_node_group_status" {
+  description = "Status of the EKS managed node group."
+  value       = aws_eks_node_group.main.status
+}
