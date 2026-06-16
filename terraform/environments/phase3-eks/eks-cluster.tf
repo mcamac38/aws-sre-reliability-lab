@@ -29,6 +29,14 @@ resource "aws_eks_cluster" "main" {
   role_arn = aws_iam_role.eks_cluster.arn
   version  = var.kubernetes_version
 
+  enabled_cluster_log_types = [
+    "api",
+    "audit",
+    "authenticator",
+    "controllerManager",
+    "scheduler"
+  ]
+
   vpc_config {
     subnet_ids = concat(
       aws_subnet.public[*].id,
