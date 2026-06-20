@@ -1,0 +1,57 @@
+stages:
+  - validate
+  
+variables:
+  TF_ROOT: "terraform/environments/phase3-eks"
+  
+terrform_validate:
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.15.5
+    entrypoint: [""]
+  script:
+    - cd "$TF_ROOT"
+    - terraform fmt -check -recursive
+    - terraform init -backend=false
+    - terraform validate
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    
+kubernetes_yaml_validate:
+  stage: validate
+  image: python:3.12-alpine
+  before_script:
+    - pip install pyyaml
+  script:
+    - python - <<'PY'
+      import pathlib
+      import yaml
+      
+      paths = [
+          pathlib.Path("kubernetes/phase3-eks"),
+          pathlib.Path("kubernetes/phase4-observability"),
+      ]
+      
+      files = []
+      for path in paths:
+          if path.exists():
+              files.extend(path.glob("*.yaml"))
+              files.extend(path.glob("*.yml"))
+              
+      if not files:
+          raise SystemExit("No Kubernetes YAML files found.")
+          
+      for file in files:
+          print(f"Validating {file}")
+          with file.open("r", encoding="utf-8") as f:
+              docs = list(yaml.safe_load_all(f))
+              
+          if not any(doc for doc in docs):
+              raise SystemExit(f"{file} does not contain any YAML documents.")
+              
+      print("Kubernetes YAML syntax validation passed.")
+      PY
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
