@@ -64,6 +64,11 @@ resource "aws_iam_role_policy_attachment" "eks_ssm_managed_instance_core" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy_attachment" "eks_cloudwatch_agent_server_policy" {
+  role       = aws_iam_role.eks_node_group.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
 resource "aws_launch_template" "eks_nodes" {
   name_prefix   = "${local.name_prefix}-nodes-"
   image_id      = data.aws_ami.packer_eks_node.id
@@ -159,6 +164,7 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.eks_worker_node_policy,
     aws_iam_role_policy_attachment.eks_cni_policy,
     aws_iam_role_policy_attachment.eks_ecr_readonly,
-    aws_iam_role_policy_attachment.eks_ssm_managed_instance_core
+    aws_iam_role_policy_attachment.eks_ssm_managed_instance_core,
+    aws_iam_role_policy_attachment.eks_cloudwatch_agent_server_policy
   ]
 }
